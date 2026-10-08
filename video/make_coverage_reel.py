@@ -739,6 +739,46 @@ def frame_at(t, n=0):
     return finish(cur, n)
 
 
+def render_cover():
+    """Static 5:4 thumbnail in the reel's style."""
+    fr = dark(W, H)
+    greek_cols(fr, 50, 40, W - 50, H - 40, cols=6, col=(46, 44, 42, 255), seed=123)
+    place(fr, torn_print("B", "warm", 820, (0.0, 0.14, 0.9, 0.98), seed=2), 1060, 470, 1.0, 4)
+    place(fr, cutout("A", "bw", 620, None, 12), 800, 700, 1.0, -4)
+    d = ImageDraw.Draw(fr)
+    f = ANTON(150)
+    d.text((60, 30), "JUST", font=f, fill=WHITE)
+    d.text((60, 195), "20 YEARS", font=f, fill=WHITE)
+    d.text((60, 360), "OLD", font=f, fill=WHITE)
+    fr.alpha_composite(brush_bar(640, 112, RED, seed=4), (30, 560))
+    d.text((70, 565), "& RULING THE STAGE", font=ANTON(84), fill=INK)
+    nf = ANTON(70)
+    tag = Image.new("RGBA", (int(nf.getlength("SHIVAM BAROT")) + 60, 112), YEL + (255,))
+    ImageDraw.Draw(tag).text((30, 0), "SHIVAM BAROT", font=nf, fill=INK)
+    place(fr, shadow(torn(tag, j=6, seed=9, edges="lr"), blur=8, off=(6, 8), alpha=120), 70 + tag.width / 2, 755, 1.0, -2)
+    d.text((72, 822), "The youngest Gujarati folk artist", font=TYPE(30), fill=(225, 220, 210))
+    d.text((72, 860), "in the industry today", font=TYPE(30), fill=(225, 220, 210))
+    # featured-in strip
+    strip = Image.new("RGBA", (W, 150), (0, 0, 0, 0))
+    sd = ImageDraw.Draw(strip)
+    sd.rectangle([0, 0, W, 150], fill=PAPER + (255,))
+    sd.text((40, 14), "AS FEATURED IN", font=OSWB(26), fill=RED)
+    x, y = 40, 58
+    for o in OUTLETS:
+        tf = OSWB(22)
+        w = int(tf.getlength(o[0].upper())) + 24
+        if x + w > W - 30: x, y = 40, y + 46
+        sd.rectangle([x, y, x + w, y + 36], fill=INK + (255,))
+        sd.text((x + 12, y + 2), o[0].upper(), font=tf, fill=WHITE)
+        x += w + 10
+    fr.alpha_composite(shadow(torn(strip, j=10, seed=3, edges="t"), blur=10, off=(0, -6), alpha=120), (-30, H - 150 - 30))
+    return finish(fr, 0)
+
+
+if len(sys.argv) > 4 and sys.argv[4] == "cover":
+    render_cover().save(OUT)
+    sys.exit(0)
+
 if len(sys.argv) > 4:
     for ts in sys.argv[4].split(","):
         frame_at(float(ts)).save(f"{OUT}_{ts}.png")
