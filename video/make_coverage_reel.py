@@ -1,6 +1,6 @@
 """Grunge editorial-collage reel (5:4, 1350x1080) of Shivam Barot's press coverage.
 
-Usage: python3 make_coverage_reel.py <photo.png> <fonts_dir> <out.mp4> [preview_times]
+Usage: python3 make_coverage_reel.py <photoA.png,photoB.png> <fonts_dir> <out.mp4> [preview_times]
 All on-screen copy is quoted verbatim from the syndicated article the seven outlets published.
 """
 import math, random, subprocess, sys, wave
@@ -196,72 +196,124 @@ def tape(w=150, h=46, seed=0):
     return torn(im, j=5, seed=seed, edges="lr")
 
 
-# ---------------- photo ----------------
-src = Image.open(PHOTO).convert("RGB")
-src = src.resize((src.width * 3, src.height * 3), Image.LANCZOS).filter(ImageFilter.UnsharpMask(2, 80, 2))
-arr = np.asarray(src, float)
-border = np.concatenate([arr[:8].reshape(-1, 3), arr[-8:].reshape(-1, 3), arr[:, :8].reshape(-1, 3), arr[:, -8:].reshape(-1, 3)])
-bgc = np.median(border, 0)
-# background = low-saturation light pixels connected to the frame edge (gradient studio backdrop)
-lum = arr.mean(-1); sat = arr.max(-1) - arr.min(-1)
-cand = ((np.abs(arr - bgc).max(-1) < 34) | ((lum > bgc.mean() - 30) & (sat < 14))).astype(np.uint8) * 255
-cimg = Image.fromarray(cand).filter(ImageFilter.MedianFilter(5))
-ff_ = cimg.copy()
-for seed in [(0, 0), (ff_.width - 1, 0), (0, ff_.height - 1), (ff_.width - 1, ff_.height - 1), (ff_.width // 2, 0)]:
-    if ff_.getpixel(seed) == 255: ImageDraw.floodfill(ff_, seed, 128)
-bgm = (np.asarray(ff_) == 128)
-m = (~bgm).astype(float)
-m = (box_blur(m, 2) > 0.5).astype(np.uint8) * 255
-mask = Image.fromarray(m).filter(ImageFilter.GaussianBlur(1.0))
-bbox = mask.getbbox()
-src, mask = src.crop(bbox), mask.crop(bbox)
+# ---------------- photos ----------------
+# "A": studio shot on a light backdrop (cut out as a sticker); "B": low-key portrait with gramophone (used as torn prints).
+def load_photo(path, cut):
+    im = Image.open(path).convert("RGB")
+    if im.width < 800:
+        k = max(2, 1200 // im.width)
+        im = im.resize((im.width * k, im.height * k), Image.LANCZOS).filter(ImageFilter.UnsharpMask(2, 80, 2))
+    if not cut:
+        return im, None
+    arr = np.asarray(im, float)
+    border = np.concatenate([arr[:8].reshape(-1, 3), arr[-8:].reshape(-1, 3), arr[:, :8].reshape(-1, 3), arr[:, -8:].reshape(-1, 3)])
+    bgc = np.median(border, 0)
+    # background = low-saturation light pixels connected to the frame edge (gradient studio backdrop)
+    lum = arr.mean(-1); sat = arr.max(-1) - arr.min(-1)
+    cand = ((np.abs(arr - bgc).max(-1) < 34) | ((lum > bgc.mean() - 30) & (sat < 14))).astype(np.uint8) * 255
+    ff_ = Image.fromarray(cand).filter(ImageFilter.MedianFilter(5))
+    for seed in [(0, 0), (ff_.width - 1, 0), (0, ff_.height - 1), (ff_.width - 1, ff_.height - 1), (ff_.width // 2, 0)]:
+        if ff_.getpixel(seed) == 255: ImageDraw.floodfill(ff_, seed, 128)
+    m = (~(np.asarray(ff_) == 128)).astype(float)
+    m = (box_blur(m, 2) > 0.5).astype(np.uint8) * 255
+    return im, Image.fromarray(m).filter(ImageFilter.GaussianBlur(1.0))
 
 
-def photo_variant(style):
+_paths = PHOTO.split(",")
+PHOTOS = {"A": load_photo(_paths[0], True), "B": load_photo(_paths[1], False)}
+
+
+def get_photo(pid, crop=None):
+    im, mk = PHOTOS[pid]
+    if crop:
+        box = (int(crop[0] * im.width), int(crop[1] * im.height), int(crop[2] * im.width), int(crop[3] * im.height))
+        im = im.crop(box); mk = mk.crop(box) if mk else None
+    return im, mk
+
+
+def stylize(im, style):
     if style == "bw":
-        g = ImageOps.autocontrast(ImageOps.grayscale(src), cutoff=1)
-        g = ImageOps.colorize(g, (18, 18, 18), (245, 242, 235))
-        return g
+        g = ImageOps.autocontrast(ImageOps.grayscale(im), cutoff=1)
+        return ImageOps.colorize(g, (18, 18, 18), (245, 242, 235))
     if style == "duo":
-        g = ImageOps.autocontrast(ImageOps.grayscale(src), cutoff=1)
+        g = ImageOps.autocontrast(ImageOps.grayscale(im), cutoff=1)
         return ImageOps.colorize(g, (25, 10, 10), (240, 60, 50), mid=(150, 25, 25))
-    return src
+    if style == "warm":
+        return ImageOps.autocontrast(im, cutoff=0.5)
+    return im
 
 
-def cutout(style, height, border=12):
-    im = photo_variant(style).convert("RGBA")
-    im.putalpha(mask)
+def add_grain(im, amt=9):
+    a = np.array(im).astype(float)
+    a[..., :3] = np.clip(a[..., :3] + rng.standard_normal(a.shape[:2])[..., None] * amt, 0, 255)
+    return Image.fromarray(a.astype(np.uint8))
+
+
+def cutout(pid, style, height, crop=None, border=12):
+    raw, mk = get_photo(pid, crop)
+    bb = mk.getbbox(); raw, mk = raw.crop(bb), mk.crop(bb)
+    im = stylize(raw, style).convert("RGBA"); im.putalpha(mk)
     s = height / im.height
-    im = im.resize((int(im.width * s), int(im.height * s)), Image.LANCZOS)
+    im = add_grain(im.resize((int(im.width * s), int(im.height * s)), Image.LANCZOS))
     mk = im.split()[3]
-    grain = (rng.standard_normal((im.height, im.width)) * 9)
-    a = np.array(im).astype(float); a[..., :3] = np.clip(a[..., :3] + grain[..., None], 0, 255)
-    im = Image.fromarray(a.astype(np.uint8))
-    # white sticker border
     pad = border * 2
     big = Image.new("L", (im.width + 2 * pad, im.height + 2 * pad), 0); big.paste(mk, (pad, pad))
-    st = big.filter(ImageFilter.MaxFilter(border * 2 + 1 if border * 2 + 1 <= 31 else 31)).filter(ImageFilter.GaussianBlur(1))
-    out = Image.new("RGBA", big.size, WHITE + (0,))
-    out.putalpha(st)
+    st = big.filter(ImageFilter.MaxFilter(min(31, border * 2 + 1))).filter(ImageFilter.GaussianBlur(1))
+    out = Image.new("RGBA", big.size, WHITE + (0,)); out.putalpha(st)
     out.alpha_composite(im, (pad, pad))
     return shadow(out, blur=16, off=(12, 18), alpha=140)
 
 
-def polaroid(style, w):
-    ph = photo_variant(style).convert("RGB")
-    bg = Image.new("RGB", ph.size, (236, 232, 224))
-    bg.paste(ph, (0, 0), mask)
-    s = (w - 40) / bg.width
-    bg = bg.resize((int(bg.width * s), int(bg.height * s)), Image.LANCZOS)
-    hh = min(bg.height, int((w - 40) * 1.18))
-    bg = bg.crop((0, 0, bg.width, hh))
+def torn_print(pid, style, height, crop=None, seed=0, border=14):
+    """Rectangular photo print with a white border and torn edges."""
+    raw, _ = get_photo(pid, crop)
+    im = stylize(raw, style)
+    s = height / im.height
+    im = add_grain(im.resize((int(im.width * s), int(im.height * s)), Image.LANCZOS).convert("RGBA"), 7)
+    card = Image.new("RGBA", (im.width + 2 * border, im.height + 2 * border), WHITE + (255,))
+    card.alpha_composite(im, (border, border))
+    return shadow(torn(card, j=10, seed=seed), blur=16, off=(12, 18), alpha=150)
+
+
+def polaroid(pid, style, w, crop=None):
+    raw, mk = get_photo(pid, crop)
+    ph = stylize(raw, style).convert("RGB")
+    if mk is not None:
+        bg = Image.new("RGB", ph.size, (236, 232, 224)); bg.paste(ph, (0, 0), mk); ph = bg
+    s = (w - 40) / ph.width
+    ph = ph.resize((int(ph.width * s), int(ph.height * s)), Image.LANCZOS)
+    hh = min(ph.height, int((w - 40) * 1.18))
+    ph = ph.crop((0, 0, ph.width, hh))
     card = Image.new("RGBA", (w, hh + 130), WHITE + (255,))
-    card.paste(bg, (20, 20))
+    card.paste(ph, (20, 20))
     d = ImageDraw.Draw(card)
     f = HAND(54)
     tw = tsize(f, "Shivam Barot, 20")[0]
     d.text(((w - tw) / 2, hh + 42), "Shivam Barot, 20", font=f, fill=(40, 40, 120))
     return card
+
+
+# crops (fractions of each source image)
+A_FULL, A_UPPER, A_FACE = None, (0.0, 0.0, 1.0, 0.62), (0.08, 0.04, 0.72, 0.46)
+B_FULL, B_HALF, B_FACE, B_TALL = (0.0, 0.12, 1.0, 1.0), (0.0, 0.2, 0.62, 0.78), (0.06, 0.16, 0.56, 0.5), (0.0, 0.14, 0.78, 0.96)
+
+# which photo each segment uses: (kind, photo, style, crop)
+SHOTS = [
+    ("cut", "A", "color", A_FULL),    # Tribune
+    ("polaroid", "A", "color", A_FACE),  # The Wire
+    ("print", "B", "duo", B_HALF),    # Eastern Herald
+    ("cut", "A", "bw", A_FULL),       # PTI
+    ("polaroid", "B", "warm", B_FACE),  # Vie Stories
+    ("cut", "A", "duo", A_UPPER),     # Business News This Week
+    ("print", "B", "bw", B_TALL),     # India Shorts
+]
+
+
+def shot_image(i, height):
+    kind, pid, style, crop = SHOTS[i]
+    if kind == "cut": return cutout(pid, style, height, crop)
+    if kind == "print": return torn_print(pid, style, height, crop, seed=i)
+    return shadow(polaroid(pid, style, int(height * 0.5), crop), blur=14, off=(12, 18), alpha=150)
 
 
 # ---------------- text layout ----------------
@@ -342,7 +394,7 @@ class Intro(Scene):
     def __init__(self):
         self.bg = dark(W, H)
         greek_cols(self.bg, 60, 60, W - 60, H - 60, cols=5, col=(48, 46, 44, 255), seed=9)
-        self.photo = cutout("bw", 860, 14)
+        self.photo = torn_print("B", "warm", 800, (0.0, 0.18, 1.0, 1.0), seed=1)
         self.w1 = ANTON(160)
         self.bar = brush_bar(760, 120, RED, seed=4)
         self.sub_words = layout("How Shivam Barot Became Gujarati Folk’s Biggest Young Sensation", TYPE(36), 620, 48)
@@ -379,10 +431,10 @@ class TemplateA(Scene):
     """Paper page: outlet tag, slammed big word over brush stroke, cut-out photo, typed quote."""
     dur = 5.6
     def __init__(self, i, o):
-        self.o = o; name, dom, date, _, big, quote, hl = o
+        self.o = o; self.i = i; name, dom, date, _, big, quote, hl = o
         self.bg = paper(W, H)
         greek_cols(self.bg, 50, 40, W - 50, H - 40, cols=6, seed=i)
-        self.photo = cutout("bw", 900, 12)
+        self.photo = shot_image(i, 860 if SHOTS[i][0] == "cut" else 700)
         self.bigf = fit(ANTON, big, 820, 230)
         self.bar = brush_bar(int(self.bigf.getlength(big)) + 40, int(self.bigf.size * 0.62), RED, seed=i + 20)
         self.tag = self.make_tag(name, dom, date)
@@ -409,6 +461,9 @@ class TemplateA(Scene):
         tp = ease_out(t / 0.45)
         fr.alpha_composite(self.tag, (int(-self.tag.width + tp * (self.tag.width + 20)), 30))
         big = self.o[4]
+        photo_args = (self.photo, min(1080, W - self.photo.width / 2 + 20), 600 + (1 - p) * 650, 1.0, 3 - (1 - p) * 6)
+        on_top = SHOTS[self.i][0] == "cut"  # cut-outs sit above the big word so it never crosses the face
+        if not on_top: place(fr, *photo_args)
         bp = (t - 0.35) / 0.3
         if bp > 0:
             fr.alpha_composite(reveal_x(self.bar, ease_out(bp)), (40, 250 + int(self.bigf.size * 0.25)))
@@ -417,7 +472,7 @@ class TemplateA(Scene):
             layer = Image.new("RGBA", (int(self.bigf.getlength(big)) + 30, int(self.bigf.size * 1.4)), (0, 0, 0, 0))
             ImageDraw.Draw(layer).text((15, 0), big, font=self.bigf, fill=INK)
             place(fr, layer, 70 + layer.width / 2, 250 + layer.height / 2, 1 + 0.8 * (1 - back(q)), 0, clamp01(q * 3))
-        place(fr, self.photo, 1080, 600 + (1 - p) * 650, 1.0, 3 - (1 - p) * 6)
+        if on_top: place(fr, *photo_args)
         typ = (t - 1.0) * 58
         hlp = (t - 1.0 - self.nchar / 58 - 0.1) / 0.6
         # paper strip behind quote
@@ -458,7 +513,7 @@ class TemplateB(Scene):
         self.words = layout(quote, self.qf, cw - 100, 46)
         self.hl = phrase_idx(self.words, hl)
         self.nchar = len(quote)
-        self.pol = shadow(polaroid("color", 420), blur=14, off=(12, 18), alpha=150)
+        self.pol = shadow(polaroid(SHOTS[i][1], SHOTS[i][2], 420, SHOTS[i][3]), blur=14, off=(12, 18), alpha=150)
         self.tape1, self.tape2 = tape(seed=i), tape(seed=i + 1)
         self.cw, self.ch = cw, ch
         self.big = big
@@ -516,7 +571,7 @@ class TemplateC(Scene):
         self.right = paper(W - self.split, H)
         greek_cols(self.right, 40, 40, W - self.split - 40, H - 40, cols=4, seed=i + 90)
         self.name_lines = self.stack(name.upper())
-        self.photo = cutout("duo", 600, 10)
+        self.photo = shot_image(i, 560 if SHOTS[i][0] == "cut" else 470)
         self.bigf = fit(ANTON, big, W - self.split - 140, 200)
         self.qf = SERIFI(54)
         self.words = layout(quote, self.qf, W - self.split - 150, 66)
@@ -583,7 +638,8 @@ class Outro(Scene):
     def __init__(self):
         self.bg = paper(W, H)
         greek_cols(self.bg, 50, 40, W - 50, H - 40, cols=6, seed=99)
-        self.photo = cutout("bw", 720, 12)
+        self.photo = cutout("A", "bw", 700)
+        self.photo2 = torn_print("B", "warm", 520, B_HALF, seed=5)
         self.tags = []
         for i, o in enumerate(OUTLETS):
             f = OSWB(34)
@@ -606,7 +662,8 @@ class Outro(Scene):
                 place(fr, tg, x + tg.width / 2, y + tg.height / 2, 1 + 0.7 * (1 - back(q)), (-2, 1.5, -1, 2, -1.5, 1, -2)[i], clamp01(q * 3))
             y += 82
         pp = ease_out((t - 0.2) / 0.8)
-        place(fr, self.photo, 1120, 650 + (1 - pp) * 600, 1.0, 3)
+        place(fr, self.photo2, 1000, 420 + (1 - pp) * 700, 1.0, -6)
+        place(fr, self.photo, 1170, 680 + (1 - pp) * 600, 1.0, 3)
         bp = (t - 1.9) / 0.4
         if bp > 0:
             fr.alpha_composite(reveal_x(self.bar, ease_out(bp)), (30, 795))
